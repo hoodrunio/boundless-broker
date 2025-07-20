@@ -411,7 +411,9 @@ where
         current_block_timestamp: u64,
         min_deadline: u64,
     ) -> Result<Vec<Arc<OrderRequest>>> {
-        let mut candidate_orders: Vec<Arc<OrderRequest>> = Vec::new();
+        // Pre-allocate capacity based on cache sizes for better performance
+        let estimated_capacity = self.lock_and_prove_cache.entry_count() + self.prove_cache.entry_count();
+        let mut candidate_orders: Vec<Arc<OrderRequest>> = Vec::with_capacity(estimated_capacity as usize);
 
         fn is_within_deadline(
             order: &OrderRequest,

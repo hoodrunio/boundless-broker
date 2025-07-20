@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::future::pending;
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::{
@@ -27,6 +28,7 @@ use crate::{
     Order, OrderStateChange, OrderStatus,
 };
 use anyhow::{Context, Result};
+use futures::future::FutureExt;
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
@@ -141,23 +143,25 @@ impl ProvingService {
                 // This is a new order that needs proving
                 tracing::info!("Proving order {order_id}");
 
-                // If the ID's are not present then upload them now
+                // If the ID's are not present then upload them now - PARALLELIZED FOR SPEED
                 // Mostly hit by skipping pre-flight
-                let image_id = match order.image_id.as_ref() {
-                    Some(val) => val.clone(),
-                    None => {
-                        crate::storage::upload_image_uri(&self.prover, &order.request, &self.config)
-                            .await
-                            .context("Failed to upload image")?
-                    }
-                };
-
-                let input_id = match order.input_id.as_ref() {
-                    Some(val) => val.clone(),
-                    None => {
-                        crate::storage::upload_input_uri(&self.prover, &order.request, &self.config)
-                            .await
-                            .context("Failed to upload input")?
+                let (image_id, input_id) = match (order.image_id.as_ref(), order.input_id.as_ref()) {
+                    (Some(img_id), Some(inp_id)) => (img_id.clone(), inp_id.clone()),
+                    (image_id_opt, input_id_opt) => {
+                        let image_fut = if let Some(img_id) = image_id_opt {
+                            futures::future::ready(Ok(img_id.clone())).boxed()
+                        } else {
+                            crate::storage::upload_image_uri(&self.prover, &order.request, &self.config).boxed()
+                        };
+                        
+                        let input_fut = if let Some(inp_id) = input_id_opt {
+                            futures::future::ready(Ok(inp_id.clone())).boxed()
+                        } else {
+                            crate::storage::upload_input_uri(&self.prover, &order.request, &self.config).boxed()
+                        };
+                        
+                        tokio::try_join!(image_fut, input_fut)
+                            .context("Failed to upload image or input in parallel")?
                     }
                 };
 
@@ -287,6 +291,7 @@ impl ProvingService {
 
     async fn prove_and_update_db(&self, mut order: Order) {
         let order_id = order.id();
+        let order_arc = Arc::new(order.clone()); // Clone once, then use Arc references
 
         let (proof_retry_count, proof_retry_sleep_ms) = {
             let config = self.config.lock_all().unwrap();
@@ -296,7 +301,13 @@ impl ProvingService {
         let proof_id = match retry(
             proof_retry_count,
             proof_retry_sleep_ms,
-            || async { self.get_or_create_stark_session(order.clone()).await },
+            {
+                let order_ref = Arc::clone(&order_arc);
+                move || {
+                    let value = order_ref.clone();
+                    async move { self.get_or_create_stark_session((*value).clone()).await }
+                }
+            },
             "get_or_create_stark_session",
         )
         .await
@@ -317,7 +328,13 @@ impl ProvingService {
         let result = retry(
             proof_retry_count,
             proof_retry_sleep_ms,
-            || async { self.monitor_proof_with_timeout(order.clone()).await },
+            {
+                let order_ref = Arc::clone(&order_arc);
+                move || {
+                    let value = order_ref.clone();
+                    async move { self.monitor_proof_with_timeout((*value).clone()).await }
+                }
+            },
             "monitor_proof_with_timeout",
         )
         .await;

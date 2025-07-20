@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{default::Default, str::FromStr, sync::Arc};
+use std::{cell::RefCell, default::Default, fmt::Write, str::FromStr, sync::Arc};
 
 use alloy::primitives::{ruint::ParseError as RuintParseErr, Bytes, B256, U256};
 use async_trait::async_trait;
@@ -83,6 +83,21 @@ pub enum DbError {
 }
 
 impl_coded_debug!(DbError);
+
+// Optimized hex formatting to avoid string allocations in hot paths
+thread_local! {
+    static HEX_BUFFER: RefCell<String> = RefCell::new(String::with_capacity(66));
+}
+
+fn format_hex_u256(value: U256) -> String {
+    HEX_BUFFER.with(|buf| {
+        let mut buffer = buf.borrow_mut();
+        buffer.clear();
+        buffer.push_str("0x");
+        write!(buffer, "{:x}", value).unwrap();
+        buffer.clone() // Only clone the final result
+    })
+}
 
 impl CodedError for DbError {
     fn code(&self) -> &str {
@@ -857,7 +872,7 @@ impl BrokerDb for SqliteDb {
                 id = $4"#,
         )
         .bind(new_deadline)
-        .bind(format!("0x{new_fees:x}"))
+        .bind(format_hex_u256(new_fees))
         .bind(sqlx::types::Json(aggreagtion_state))
         .bind(batch_id as i64)
         .execute(&mut *txn)
@@ -959,7 +974,7 @@ impl BrokerDb for SqliteDb {
             r#"
             INSERT INTO fulfilled_requests (id, block_number) VALUES ($1, $2)"#,
         )
-        .bind(format!("0x{request_id:x}"))
+        .bind(format_hex_u256(request_id))
         .bind(block_number as i64)
         .execute(&self.pool)
         .await?;
@@ -970,7 +985,7 @@ impl BrokerDb for SqliteDb {
     #[instrument(level = "trace", skip(self))]
     async fn is_request_fulfilled(&self, request_id: U256) -> Result<bool, DbError> {
         let res = sqlx::query(r#"SELECT * FROM fulfilled_requests WHERE id = $1"#)
-            .bind(format!("0x{request_id:x}"))
+            .bind(format_hex_u256(request_id))
             .fetch_optional(&self.pool)
             .await?;
 
@@ -987,7 +1002,7 @@ impl BrokerDb for SqliteDb {
         sqlx::query(
             r#"INSERT INTO locked_requests (id, locker, block_number) VALUES ($1, $2, $3)"#,
         )
-        .bind(format!("0x{request_id:x}"))
+        .bind(format_hex_u256(request_id))
         .bind(locker)
         .bind(block_number as i64)
         .execute(&self.pool)
@@ -999,7 +1014,7 @@ impl BrokerDb for SqliteDb {
     #[instrument(level = "trace", skip(self))]
     async fn is_request_locked(&self, request_id: U256) -> Result<bool, DbError> {
         let res = sqlx::query(r#"SELECT * FROM locked_requests WHERE id = $1"#)
-            .bind(format!("0x{request_id:x}"))
+            .bind(format_hex_u256(request_id))
             .fetch_optional(&self.pool)
             .await?;
 
@@ -1010,7 +1025,7 @@ impl BrokerDb for SqliteDb {
     async fn get_request_locked(&self, request_id: U256) -> Result<Option<(String, u64)>, DbError> {
         let res: Option<DbLockedRequest> =
             sqlx::query_as(r#"SELECT * FROM locked_requests WHERE id = $1"#)
-                .bind(format!("0x{request_id:x}"))
+                .bind(format_hex_u256(request_id))
                 .fetch_optional(&self.pool)
                 .await?;
 

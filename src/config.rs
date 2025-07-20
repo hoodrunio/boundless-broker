@@ -282,7 +282,7 @@ impl Default for MarketConf {
             stake_balance_warn_threshold: None,
             stake_balance_error_threshold: None,
             max_concurrent_proofs: None,
-            cache_dir: None,
+            cache_dir: Some(PathBuf::from("./cache")), // Enable caching for performance
             max_concurrent_preflights: defaults::max_concurrent_preflights(),
             order_pricing_priority: OrderPricingPriority::default(),
             order_commitment_priority: OrderCommitmentPriority::default(),
@@ -350,10 +350,10 @@ impl Default for ProverConf {
             status_poll_retry_count: 0,
             status_poll_ms: 100,
             bonsai_r0_zkvm_ver: None,
-            req_retry_count: 0,
-            req_retry_sleep_ms: 50,
-            proof_retry_count: 0,
-            proof_retry_sleep_ms: 75,
+            req_retry_count: 3,    // Increase retries for resilience
+            req_retry_sleep_ms: 25,   // Ultra-fast retry
+            proof_retry_count: 2,     // Retry failed proofs
+            proof_retry_sleep_ms: 50, // Fast proof retry
             set_builder_guest_path: None,
             assessor_set_guest_path: None,
             max_critical_task_retries: None,
